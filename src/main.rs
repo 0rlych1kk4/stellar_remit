@@ -84,6 +84,9 @@ async fn run(args: Cli) -> Result<()> {
     let http = Client::new();
 
     // Retry GET /accounts on server errors
+    let http = Client::new();
+
+    // Retry GET /accounts on server error
     let acct_url = format!("{}/accounts/{}", cfg.horizon_url, sender_kp.public_key());
     let acct_text = {
         let mut attempts = 0;
@@ -91,6 +94,14 @@ async fn run(args: Cli) -> Result<()> {
             let resp = http.get(&acct_url).send().await.context("GET /accounts failed")?;
             let status = resp.status();
             let body = resp.text().await.context("Read account body failed")?;
+            let resp = http
+                .get(&acct_url)
+                .send()
+                .await
+                .context("Failed to GET account info")?;
+            let status = resp.status();
+            let body = resp.text().await.context("Failed to read account response")?;
+
             if status.is_success() {
                 break body;
             } else if status.is_server_error() && attempts < 2 {
@@ -102,13 +113,22 @@ async fn run(args: Cli) -> Result<()> {
             }
         }
     };
+
     let acct_json: Value = serde_json::from_str(&acct_text).context("Parse account JSON failed")?;
+
+
+    let acct_json: Value = serde_json::from_str(&acct_text)
+        .context("Failed to parse account JSON")?;
+
     let seq: i64 = acct_json["sequence"]
         .as_str()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow!("Invalid sequence in account JSON"))?;
 
     // Build payment operation
+
+    // Build the payment operation
+    let stm = Stroops::new(1_000_000);
     let payment_op = Operation::new_payment()
         .with_destination(receiver_pk)
         .with_asset(Asset::new_native())
@@ -162,6 +182,28 @@ async fn run(args: Cli) -> Result<()> {
     let hash = json["hash"]
         .as_str()
         .ok_or_else(|| anyhow!("No hash in response"))?;
+    let text = resp
+        .text()
+        .await
+        .context("Failed to read submit response")?;
+
+    if !status.is_success() {
+        if let Ok(json) = serde_json::from_str::<Value>(&text) {
+            if let Some(code) = json["extras"]["result_codes"]["transaction"].as_str() {
+                let msg = match code {
+                    "tx_bad_seq" => "Sequence error: please retry after refreshing sequence.",
+                    "tx_insufficient_balance" => "Insufficient balance: top up your account.",
+                    other => return Err(anyhow!("Transaction failed with code: {}", other)),
+                };
+                return Err(anyhow!(msg));
+            }
+        }
+        return Err(anyhow!("Horizon error submitting tx ({}): {}", status, text));
+    }
+
+    // Parse and display the transaction hash
+    let json: Value = serde_json::from_str(&text).context("Invalid JSON from submit")?;
+    let hash = json["hash"].as_str().ok_or_else(|| anyhow!("No `hash` in response"))?;
     println!("Transaction sent! Hash: {}", hash);
 
     Ok(())
