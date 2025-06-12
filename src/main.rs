@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use dotenvy::dotenv;
 use reqwest::Client;
 use serde_json::Value;
 use stellar_base::{
@@ -12,12 +11,12 @@ use stellar_base::{
     transaction::{Transaction, MIN_BASE_FEE},
     xdr::XDRSerialize,
 };
-use std::env;
+
+mod config;
+use config::AppConfig;
 
 #[tokio::main]
 async fn main() {
-    dotenv().ok();
-
     if let Err(e) = run().await {
         eprintln!("Error: {:#}", e);
         std::process::exit(1);
@@ -25,23 +24,18 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    // 1) Load environment variables
-    let horizon_url   = env::var("STELLAR_HORIZON")
-        .context("STELLAR_HORIZON env var not set")?;
-    let sender_secret = env::var("SENDER_SECRET")
-        .context("SENDER_SECRET env var not set")?;
-    let receiver_addr = env::var("RECEIVER_ADDRESS")
-        .context("RECEIVER_ADDRESS env var not set")?;
+    // Load configuration
+    let cfg = AppConfig::init()?;
 
-    // 2) Build keypairs
-    let sender_kp = SodiumKeyPair::from_secret_seed(&sender_secret)
+    // Build keypairs
+    let sender_kp = SodiumKeyPair::from_secret_seed(&cfg.sender_secret)
         .context("Invalid SENDER_SECRET seed")?;
-    let receiver_pk = PublicKey::from_account_id(&receiver_addr)
+    let receiver_pk = PublicKey::from_account_id(&cfg.receiver_address)
         .context("Invalid RECEIVER_ADDRESS key")?;
 
-    // 3) Fetch current sequence
+    // Fetch current sequence
     let http = Client::new();
-    let acct_url = format!("{}/accounts/{}", horizon_url, sender_kp.public_key());
+    let acct_url = format!("{}/accounts/{}", cfg.horizon_url, sender_kp.public_key());
     let acct_res = http
         .get(&acct_url)
         .send()
@@ -62,8 +56,8 @@ async fn run() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow!("Invalid sequence in account JSON"))?;
 
-    // 4) Build the payment operation
-    let stm = Stroops::new(1_000_000); // 1 XLM = 1,000,000 stroops
+    // Build the payment operation
+    let stm = Stroops::new(1_000_000);  // 1 XLM = 1,000,000 stroops
     let payment_op = Operation::new_payment()
         .with_destination(receiver_pk)
         .with_asset(Asset::new_native())
@@ -72,7 +66,7 @@ async fn run() -> Result<()> {
         .build()
         .context("Failed to build payment operation")?;
 
-    // 5) Build & sign transaction
+    // Build & sign transaction
     let mut tx = Transaction::builder(sender_kp.public_key(), seq + 1, MIN_BASE_FEE)
         .add_operation(payment_op)
         .with_memo(Memo::Text("Remittance".into()))
@@ -81,14 +75,14 @@ async fn run() -> Result<()> {
     tx.sign(&sender_kp.as_ref(), &Network::new_test())
         .context("Failed to sign transaction")?;
 
-    // 6) Serialize envelope to XDR
+    // Serialize envelope to XDR
     let envelope = tx.into_envelope();
     let envelope_xdr = envelope
         .xdr_base64()
         .context("Failed to serialize envelope to base64 XDR")?;
 
-    // 7) Submit via HTTP POST
-    let submit_url = format!("{}/transactions", horizon_url);
+    // Submit via HTTP POST
+    let submit_url = format!("{}/transactions", cfg.horizon_url);
     let resp = http
         .post(&submit_url)
         .form(&[("tx", envelope_xdr)])
@@ -104,7 +98,7 @@ async fn run() -> Result<()> {
         return Err(anyhow!("Horizon error submitting tx ({}): {}", status, text));
     }
 
-    // 8) Parse and display the transaction hash
+    // Parse and display the transaction hash
     let json: Value = serde_json::from_str(&text)
         .context("Invalid JSON from submit")?;
     let hash = json["hash"]
