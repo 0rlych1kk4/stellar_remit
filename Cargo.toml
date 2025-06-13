@@ -47,3 +47,11 @@ anyhow = "1.0"
 # Sodium for keypair creation
 sodiumoxide = "0.2"
 
+# Prometheus client
+prometheus = "0.14"
+
+# HTTP-server metrics via tower-http
+tower-http = { version = "0.3", features = ["metrics"] }
+
+# for the lazy_static macros
+lazy_static = "1.4"
