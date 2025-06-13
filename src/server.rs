@@ -30,4 +30,3 @@ async fn health_check() -> &'static str {
 async fn metrics_handler() -> &'static str {
     "# HELP dummy_metric Always returns 1\n# TYPE dummy_metric gauge\ndummy_metric 1"
 }
-
