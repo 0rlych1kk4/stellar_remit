@@ -1,25 +1,49 @@
 [package]
 name = "stellar_remit"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+authors = ["Orlando Trajano <orlychikka@gmail.com>"]
+description = "A simple CLI and health/metrics server for sending payments on the Stellar network"
+license = "MIT"
+repository = "https://github.com/0rlych1kk4/stellar_remit"
+homepage = "https://github.com/0rlych1kk4/stellar_remit"
+readme = "README.md"
+keywords = ["stellar", "cli", "remittance", "payments"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
+# Stellar SDK & Horizon integration
 stellar-base = "=0.6.0"
+stellar-horizon = "0.7.1"
+
+# Async runtime and HTTP client
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Configuration
+config = "0.13"
+dotenvy = "0.15"
+
+# Command-line parsing
+clap = { version = "4", features = ["derive"] }
+
+# JSON serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sodiumoxide = "0.2"
-dotenvy = "0.15"
-stellar-horizon = "0.7.1"
-anyhow = "1.0"
-clap = { version = "4", features = ["derive"] }
+
+# Retry logic
+tokio-retry = "0.3"
+
+# Structured logging and subscriber
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tokio-retry = "0.3"
-config = "0.13"
-axum = "0.7"
-hyper = { version = "1", features = ["full"] }
 
-[lib]
-path = "src/lib.rs"
+# Web server for health & metrics
+axum = "0.7"
+
+# Generic error handling
+anyhow = "1.0"
+
+# Sodium for keypair creation
+sodiumoxide = "0.2"
+
