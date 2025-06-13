@@ -4,7 +4,6 @@ use config::AppConfig;
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
-use tokio::time::sleep;
 use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tracing::{error, info};
 use tracing_subscriber;
@@ -12,7 +11,7 @@ use tracing_subscriber;
 use stellar_base::{
     amount::Stroops,
     asset::Asset,
-    crypto::{SodiumKeyPair, PublicKey},
+    crypto::{PublicKey, SodiumKeyPair},
     memo::Memo,
     network::Network,
     operations::Operation,
@@ -21,7 +20,7 @@ use stellar_base::{
 };
 
 mod config;
-mod server; //  Added this line
+mod server;
 
 /// CLI options, which override env vars when present
 #[derive(Parser)]
@@ -54,9 +53,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init(); // Initialize logger
+    tracing_subscriber::fmt::init();
 
-    //  Spawn the health server concurrently
+    // Start background health server
     tokio::spawn(async {
         server::run_health_server().await;
     });
@@ -101,7 +100,11 @@ async fn run(args: Cli) -> Result<()> {
         .take(3);
 
     let acct_text = Retry::spawn(retry_strategy, || async {
-        let resp = http.get(&acct_url).send().await.context("GET /accounts failed")?;
+        let resp = http
+            .get(&acct_url)
+            .send()
+            .await
+            .context("GET /accounts failed")?;
         let status = resp.status();
         let body = resp.text().await.context("Read account body failed")?;
 
@@ -116,8 +119,8 @@ async fn run(args: Cli) -> Result<()> {
     .await
     .context("Retrying Horizon account fetch failed")?;
 
-    let acct_json: Value = serde_json::from_str(&acct_text)
-        .context("Failed to parse account JSON")?;
+    let acct_json: Value =
+        serde_json::from_str(&acct_text).context("Failed to parse account JSON")?;
 
     let seq: i64 = acct_json["sequence"]
         .as_str()
@@ -175,8 +178,7 @@ async fn run(args: Cli) -> Result<()> {
         .as_str()
         .ok_or_else(|| anyhow!("No hash in response"))?;
 
-    info!(" Transaction submitted successfully! Hash: {}", hash);
+    info!("Transaction submitted successfully! Hash: {}", hash);
 
     Ok(())
 }
-
