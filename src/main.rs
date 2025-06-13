@@ -5,6 +5,7 @@ use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::time::sleep;
+use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tracing::{error, info};
 use tracing_subscriber;
 
@@ -52,9 +53,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init(); // Initialize global subscriber
-
+    tracing_subscriber::fmt::init(); // Initialize logger
     let args = Cli::parse();
+
     if let Err(e) = run(args).await {
         error!("{:#}", e);
         std::process::exit(1);
@@ -86,26 +87,27 @@ async fn run(args: Cli) -> Result<()> {
     let http = Client::new();
     let acct_url = format!("{}/accounts/{}", cfg.horizon_url, sender_kp.public_key());
 
-    info!("Fetching account info from Horizon...");
-    let acct_text = {
-        let mut attempts = 0;
-        loop {
-            let resp = http.get(&acct_url).send().await.context("GET /accounts failed")?;
-            let status = resp.status();
-            let body = resp.text().await.context("Read account body failed")?;
+    info!("Fetching sender account info from Horizon with retry...");
+    let retry_strategy = ExponentialBackoff::from_millis(300)
+        .factor(2)
+        .max_delay(Duration::from_secs(2))
+        .take(3);
 
-            if status.is_success() {
-                break body;
-            } else if status.is_server_error() && attempts < 2 {
-                attempts += 1;
-                info!("Retrying Horizon request... attempt {}", attempts);
-                sleep(Duration::from_millis(500 * attempts)).await;
-                continue;
-            } else {
-                return Err(anyhow!("Horizon error fetching account: {}", body));
-            }
+    let acct_text = Retry::spawn(retry_strategy, || async {
+        let resp = http.get(&acct_url).send().await.context("GET /accounts failed")?;
+        let status = resp.status();
+        let body = resp.text().await.context("Read account body failed")?;
+
+        if status.is_success() {
+            Ok(body)
+        } else if status.is_server_error() {
+            Err(anyhow!("Retryable server error: {}", status))
+        } else {
+            Err(anyhow!("Non-retryable Horizon error: {}", status))
         }
-    };
+    })
+    .await
+    .context("Retrying Horizon account fetch failed")?;
 
     let acct_json: Value = serde_json::from_str(&acct_text)
         .context("Failed to parse account JSON")?;
@@ -128,14 +130,16 @@ async fn run(args: Cli) -> Result<()> {
         .with_memo(Memo::Text(memo_text))
         .into_transaction()
         .context("Build transaction failed")?;
+
     tx.sign(&sender_kp.as_ref(), &Network::new_test())
         .context("Sign transaction failed")?;
 
     let envelope = tx.into_envelope();
     let envelope_xdr = envelope.xdr_base64().context("Serialize XDR failed")?;
 
-    info!("Submitting transaction...");
     let submit_url = format!("{}/transactions", cfg.horizon_url);
+    info!("Submitting transaction to Horizon...");
+
     let resp = http
         .post(&submit_url)
         .form(&[("tx", envelope_xdr)])
@@ -148,12 +152,12 @@ async fn run(args: Cli) -> Result<()> {
     if !status.is_success() {
         if let Ok(json) = serde_json::from_str::<Value>(&text) {
             if let Some(code) = json["extras"]["result_codes"]["transaction"].as_str() {
-                let friendly = match code {
-                    "tx_bad_seq" => "Sequence error: please retry with updated sequence.",
-                    "tx_insufficient_balance" => "Insufficient balance: please fund your account.",
+                let msg = match code {
+                    "tx_bad_seq" => "Sequence error: retry with updated sequence.",
+                    "tx_insufficient_balance" => "Insufficient balance: fund your account.",
                     other => return Err(anyhow!("Transaction failed with code: {}", other)),
                 };
-                return Err(anyhow!(friendly));
+                return Err(anyhow!(msg));
             }
         }
         return Err(anyhow!("Horizon error ({}): {}", status, text));
@@ -164,7 +168,8 @@ async fn run(args: Cli) -> Result<()> {
         .as_str()
         .ok_or_else(|| anyhow!("No hash in response"))?;
 
-    info!("Transaction successful! Hash: {}", hash);
+    info!(" Transaction submitted successfully! Hash: {}", hash);
+
     Ok(())
 }
 
