@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tracing::{error, info};
-use tracing_subscriber;
+use tracing_subscriber::fmt; // import fmt directly
 
 use stellar_base::{
     amount::Stroops,
@@ -53,7 +53,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    fmt::init(); // Initialize logger
 
     // Start background health server
     tokio::spawn(async {
@@ -141,7 +141,8 @@ async fn run(args: Cli) -> Result<()> {
         .into_transaction()
         .context("Build transaction failed")?;
 
-    tx.sign(&sender_kp.as_ref(), &Network::new_test())
+    // Removed the extra `&` here
+    tx.sign(sender_kp.as_ref(), &Network::new_test())
         .context("Sign transaction failed")?;
 
     let envelope = tx.into_envelope();
