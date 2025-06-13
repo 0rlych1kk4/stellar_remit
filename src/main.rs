@@ -21,6 +21,7 @@ use stellar_base::{
 };
 
 mod config;
+mod server; //  Added this line
 
 /// CLI options, which override env vars when present
 #[derive(Parser)]
@@ -54,6 +55,12 @@ struct Cli {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init(); // Initialize logger
+
+    //  Spawn the health server concurrently
+    tokio::spawn(async {
+        server::run_health_server().await;
+    });
+
     let args = Cli::parse();
 
     if let Err(e) = run(args).await {
