@@ -1,7 +1,9 @@
 use anyhow::Context;
+use config::Config;
 use dotenvy::dotenv;
-use std::env;
+use serde::Deserialize;
 
+#[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub horizon_url: String,
     pub sender_secret: String,
@@ -10,20 +12,19 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn init() -> anyhow::Result<Self> {
+        // Load from .env file if it exists
         dotenv().ok();
 
-        let horizon_url = env::var("STELLAR_HORIZON")
-            .context("STELLAR_HORIZON env var not set")?;
-        let sender_secret = env::var("SENDER_SECRET")
-            .context("SENDER_SECRET env var not set")?;
-        let receiver_address = env::var("RECEIVER_ADDRESS")
-            .context("RECEIVER_ADDRESS env var not set")?;
+        // Build configuration from file and environment
+        let builder = Config::builder()
+            .add_source(config::File::with_name("config/default").required(false))
+            .add_source(config::Environment::with_prefix("STELLAR").separator("_"));
 
-        Ok(Self {
-            horizon_url,
-            sender_secret,
-            receiver_address,
-        })
+        // Deserialize into AppConfig struct
+        let cfg = builder.build()?.try_deserialize::<AppConfig>()
+            .context("Failed to deserialize configuration")?;
+
+        Ok(cfg)
     }
 }
 
