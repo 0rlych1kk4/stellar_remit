@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use config::AppConfig;
+use prometheus::{register_histogram, register_int_counter, Histogram, IntCounter};
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
 use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tracing::{error, info};
-use tracing_subscriber::fmt; // import fmt directly
+use tracing_subscriber::fmt;
 
 use stellar_base::{
     amount::Stroops,
@@ -19,10 +20,11 @@ use stellar_base::{
     xdr::XDRSerialize,
 };
 
+use lazy_static::lazy_static;
+
 mod config;
 mod server;
 
-/// CLI options, which override env vars when present
 #[derive(Parser)]
 #[command(name = "stellar-remit")]
 struct Cli {
@@ -51,11 +53,33 @@ struct Cli {
     receiver: Option<String>,
 }
 
+lazy_static! {
+    static ref TX_ATTEMPTS: IntCounter = register_int_counter!(
+        "stellar_remit_transactions_total",
+        "Total number of transactions attempted"
+    )
+    .unwrap();
+    static ref TX_SUCCESS: IntCounter = register_int_counter!(
+        "stellar_remit_transactions_success_total",
+        "Total number of successful transactions"
+    )
+    .unwrap();
+    static ref TX_FAILURE: IntCounter = register_int_counter!(
+        "stellar_remit_transactions_failure_total",
+        "Total number of failed transactions"
+    )
+    .unwrap();
+    static ref TX_LATENCY: Histogram = register_histogram!(
+        "stellar_remit_transaction_duration_seconds",
+        "Histogram of transaction submission latencies"
+    )
+    .unwrap();
+}
+
 #[tokio::main]
 async fn main() {
-    fmt::init(); // Initialize logger
+    fmt::init();
 
-    // Start background health server
     tokio::spawn(async {
         server::run_health_server().await;
     });
@@ -141,7 +165,6 @@ async fn run(args: Cli) -> Result<()> {
         .into_transaction()
         .context("Build transaction failed")?;
 
-    // Removed the extra `&` here
     tx.sign(sender_kp.as_ref(), &Network::new_test())
         .context("Sign transaction failed")?;
 
@@ -151,28 +174,35 @@ async fn run(args: Cli) -> Result<()> {
     let submit_url = format!("{}/transactions", cfg.horizon_url);
     info!("Submitting transaction to Horizon...");
 
-    let resp = http
+    TX_ATTEMPTS.inc();
+    let timer = TX_LATENCY.start_timer();
+
+    let resp_result = http
         .post(&submit_url)
         .form(&[("tx", envelope_xdr)])
         .send()
-        .await
-        .context("POST transaction failed")?;
+        .await;
+
+    let resp = match resp_result {
+        Ok(r) => r,
+        Err(e) => {
+            TX_FAILURE.inc();
+            timer.observe_duration();
+            return Err(e).context("POST transaction failed");
+        }
+    };
+
     let status = resp.status();
     let text = resp.text().await.context("Read submit response failed")?;
 
     if !status.is_success() {
-        if let Ok(json) = serde_json::from_str::<Value>(&text) {
-            if let Some(code) = json["extras"]["result_codes"]["transaction"].as_str() {
-                let msg = match code {
-                    "tx_bad_seq" => "Sequence error: retry with updated sequence.",
-                    "tx_insufficient_balance" => "Insufficient balance: fund your account.",
-                    other => return Err(anyhow!("Transaction failed with code: {}", other)),
-                };
-                return Err(anyhow!(msg));
-            }
-        }
+        TX_FAILURE.inc();
+        timer.observe_duration();
         return Err(anyhow!("Horizon error ({}): {}", status, text));
     }
+
+    TX_SUCCESS.inc();
+    timer.observe_duration();
 
     let json: Value = serde_json::from_str(&text).context("Parse submit response JSON failed")?;
     let hash = json["hash"]
